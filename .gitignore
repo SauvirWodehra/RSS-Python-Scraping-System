@@ -1,0 +1,40 @@
+# ── Credentials & Secrets ────────────────────────────────────────────────────
+.env
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# ── Virtual Environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env.local
+
+# ── Pipeline Outputs (auto-generated, not source code) ───────────────────────
+logs/
+exports/
+
+# ── IDEs & Editors ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── OS Files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Pytest / Coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

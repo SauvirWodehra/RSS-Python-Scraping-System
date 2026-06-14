@@ -1,0 +1,228 @@
+================================================================================
+  RSS FEED SCRAPING PIPELINE — COMMANDS REFERENCE
+  Project Location: C:\Users\LOQ\Desktop\Study\RSS_Scraping
+================================================================================
+
+
+--------------------------------------------------------------------------------
+  STEP 0 — NAVIGATE TO PROJECT (Run this first every time)
+--------------------------------------------------------------------------------
+
+  cd C:\Users\LOQ\Desktop\Study\RSS_Scraping
+
+
+--------------------------------------------------------------------------------
+  STEP 1 — FIRST TIME SETUP (Run only once)
+--------------------------------------------------------------------------------
+
+  # Install all Python dependencies
+  python -m pip install --prefer-binary -r requirements.txt
+  python -m pip install --prefer-binary newspaper4k lxml_html_clean
+
+  # Create the PostgreSQL database
+  $env:PGPASSWORD='Sauvir@1130'
+  & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -c "CREATE DATABASE rss_pipeline;"
+
+
+--------------------------------------------------------------------------------
+  STEP 2 — RUNNING THE PIPELINE
+--------------------------------------------------------------------------------
+
+  # MODE 1: Run once and exit (recommended for testing)
+  python main.py --once
+
+  # MODE 2: Continuous mode — auto-repeats every 60 minutes (Press Ctrl+C to stop)
+  python main.py
+
+  # MODE 3: Show analytics report only (no scraping)
+  python main.py --report
+
+
+--------------------------------------------------------------------------------
+  STEP 3 — ANALYTICS & REPORT COMMANDS
+--------------------------------------------------------------------------------
+
+  # Generate full analytics report (prints stats + saves CSV to exports/)
+  python main.py --report
+
+  # View last 50 lines of log
+  Get-Content .\logs\pipeline.log -Tail 50
+
+  # Watch log live in real-time (like Linux tail -f)
+  Get-Content .\logs\pipeline.log -Wait -Tail 20
+
+  # List all exported CSV files (newest first)
+  Get-ChildItem .\exports\ | Sort-Object LastWriteTime -Descending
+
+  # Open latest ARTICLES CSV in Excel
+  Invoke-Item (Get-ChildItem .\exports\articles_*.csv | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+
+  # Open latest ANALYTICS REPORT CSV in Excel
+  Invoke-Item (Get-ChildItem .\exports\report_*.csv | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+
+
+--------------------------------------------------------------------------------
+  STEP 4 — CONNECT TO POSTGRESQL DATABASE
+--------------------------------------------------------------------------------
+
+  # Set password and connect
+  $env:PGPASSWORD='Sauvir@1130'
+  & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -d rss_pipeline
+
+  # Type \q to exit psql
+
+
+--------------------------------------------------------------------------------
+  STEP 5 — SQL QUERIES (Run inside psql)
+--------------------------------------------------------------------------------
+
+  -- Total articles stored
+  SELECT COUNT(*) FROM articles;
+
+  -- Articles per source with average word count
+  SELECT s.name, s.category, COUNT(a.id) AS articles, AVG(a.word_count)::INT AS avg_words
+  FROM rss_sources s
+  LEFT JOIN articles a ON a.source_id = s.id
+  GROUP BY s.name, s.category
+  ORDER BY articles DESC;
+
+  -- Articles published per day (last 7 days)
+  SELECT published_at::DATE AS date, COUNT(*) AS articles
+  FROM articles
+  WHERE published_at >= NOW() - INTERVAL '7 days'
+  GROUP BY date ORDER BY date DESC;
+
+  -- Latest 10 articles scraped
+  SELECT title, word_count, language, scraped_at
+  FROM articles
+  ORDER BY scraped_at DESC LIMIT 10;
+
+  -- Top 10 authors
+  SELECT author, COUNT(*) AS articles
+  FROM articles
+  WHERE author IS NOT NULL AND author <> ''
+  GROUP BY author ORDER BY articles DESC LIMIT 10;
+
+  -- Language breakdown of all articles
+  SELECT language, COUNT(*) AS articles FROM articles GROUP BY language;
+
+  -- Full pipeline run history (success / failed / inserted count)
+  SELECT id, started_at, finished_at, articles_found,
+         articles_inserted, articles_skipped, errors, status
+  FROM pipeline_runs ORDER BY started_at DESC;
+
+  -- All RSS sources and when they were last fetched
+  SELECT name, category, is_active, last_fetched_at FROM rss_sources;
+
+  -- Search for articles by keyword in title
+  SELECT title, url, published_at FROM articles WHERE title ILIKE '%AI%' LIMIT 10;
+
+  -- Articles from a specific source
+  SELECT a.title, a.word_count, a.published_at
+  FROM articles a
+  JOIN rss_sources s ON a.source_id = s.id
+  WHERE s.name = 'TechCrunch'
+  ORDER BY a.published_at DESC LIMIT 10;
+
+  -- Exit psql
+  \q
+
+
+--------------------------------------------------------------------------------
+  STEP 6 — QUICK HEALTH CHECKS (PowerShell)
+--------------------------------------------------------------------------------
+
+  # Check if any pipeline process is already running
+  Get-Process python* -ErrorAction SilentlyContinue
+
+  # Check logs for errors from last run
+  Select-String -Path .\logs\pipeline.log -Pattern "ERROR|failed" | Select-Object -Last 20
+
+  # Quick article count from Python
+  python -c "
+  import sys; sys.path.insert(0, '.')
+  from db.connection import init_pool, execute_query
+  init_pool()
+  rows = execute_query('SELECT COUNT(*) AS total FROM articles', fetch=True)
+  print('Total articles in DB:', rows[0]['total'])
+  "
+
+
+--------------------------------------------------------------------------------
+  STEP 7 — ADD A NEW RSS FEED
+--------------------------------------------------------------------------------
+
+  1. Open:  C:\Users\LOQ\Desktop\Study\RSS_Scraping\config\settings.py
+
+  2. Add a new entry inside the RSS_FEEDS list:
+
+        {
+            "name": "Hacker News",
+            "url":  "https://hnrss.org/frontpage",
+            "category": "Technology",
+        },
+
+  3. Save the file and run the pipeline:
+        python main.py --once
+
+  The new source is automatically seeded into the database and
+  articles start being collected on the very next run.
+
+
+--------------------------------------------------------------------------------
+  STEP 8 — STOPPING THE PIPELINE
+--------------------------------------------------------------------------------
+
+  # If running in continuous mode, press:
+  Ctrl + C
+
+  # Force kill any running Python process (if needed)
+  Get-Process python | Stop-Process -Force
+
+
+--------------------------------------------------------------------------------
+  PROJECT FILE STRUCTURE (Reference)
+--------------------------------------------------------------------------------
+
+  RSS_Scraping/
+  |
+  +-- main.py                     <-- Entry point. Always run this.
+  |
+  +-- config/
+  |   +-- settings.py             <-- DB credentials, feed URLs, scheduler config
+  |
+  +-- db/
+  |   +-- schema.sql              <-- Table definitions (auto-applied on startup)
+  |   +-- connection.py           <-- DB pool, bulk insert, run tracking
+  |
+  +-- pipeline/
+  |   +-- rss_collector.py        <-- Stage 1: Reads RSS XML feeds (feedparser)
+  |   +-- article_extractor.py    <-- Stage 2: Extracts full text (newspaper4k)
+  |   +-- web_scraper.py          <-- Stage 2 fallback: HTML scraping (BS4)
+  |   +-- data_cleaner.py         <-- Stage 3: Cleans data (Pandas)
+  |
+  +-- scheduler/
+  |   +-- scheduler.py            <-- Runs pipeline every 60 minutes (APScheduler)
+  |
+  +-- analytics/
+  |   +-- reporter.py             <-- Queries DB and exports analytics report
+  |
+  +-- utils/
+  |   +-- logger.py               <-- Rotating file + stdout logging
+  |
+  +-- logs/
+  |   +-- pipeline.log            <-- All pipeline logs (auto-created)
+  |
+  +-- exports/
+      +-- articles_<timestamp>.csv   <-- Clean articles from each run
+      +-- report_<timestamp>.csv     <-- Analytics report
+
+
+--------------------------------------------------------------------------------
+  DATABASE: rss_pipeline  |  USER: postgres  |  PASSWORD: Sauvir@1130
+  HOST: localhost          |  PORT: 5432
+--------------------------------------------------------------------------------
+
+================================================================================
+  END OF COMMANDS REFERENCE
+================================================================================
