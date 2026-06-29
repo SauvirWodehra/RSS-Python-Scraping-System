@@ -16,21 +16,22 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from config.settings import MAX_TEXT_LENGTH
+from pipeline.web_scraper import scrape_url, close_browser, PLAYWRIGHT_FIRST_DOMAINS
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+
 try:
-    import newspaper as _newspaper_module
+    import newspaper
     _NEWSPAPER_AVAILABLE = True
 except ImportError:
-    _newspaper_module = None
+    newspaper = None
     _NEWSPAPER_AVAILABLE = False
     logger.warning(
         "newspaper3k / newspaper4k not installed — "
         "full-text extraction will rely solely on BeautifulSoup."
     )
-
-from config.settings import MAX_TEXT_LENGTH
-from pipeline.web_scraper import scrape_url
-
-logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -43,6 +44,8 @@ def _newspaper_extract(url: str) -> dict:
 
     Returns dict with keys: full_text, author, published_at (may be None/empty).
     """
+    if not _NEWSPAPER_AVAILABLE or newspaper is None:
+        return {"full_text": "", "author": "", "published_at": None}
     try:
         cfg = newspaper.Config()
         cfg.browser_user_agent = (
@@ -103,15 +106,27 @@ def extract_article(raw: dict) -> dict:
 
     enriched = dict(raw)  # copy to avoid mutating input
 
-    # ── Newspaper3k attempt ───────────────────────────────────────────────────
-    np_result = _newspaper_extract(url)
+    # ── Detect Playwright-first domains — skip newspaper3k entirely ───────────
+    host = urlparse(url).hostname or ""
+    host = host.removeprefix("www.")
+    _is_playwright_domain = any(
+        host == d or host.endswith("." + d) for d in PLAYWRIGHT_FIRST_DOMAINS
+    )
+
+    # ── Newspaper3k attempt (skipped for known-blocked domains) ───────────────
+    if _is_playwright_domain:
+        logger.debug("  ⏭️  Skipping newspaper3k for Playwright-first domain: %s", host)
+        np_result = {"full_text": "", "author": "", "published_at": None}
+    else:
+        np_result = _newspaper_extract(url)
+
     full_text  = np_result["full_text"]
 
     if len(full_text) >= 200:
         logger.debug("  ✅  Newspaper3k succeeded (%d chars)", len(full_text))
     else:
-        # ── BeautifulSoup fallback ────────────────────────────────────────────
-        logger.debug("  🔄  Falling back to BS4 scraper for %s", url[:60])
+        # ── BeautifulSoup / Playwright fallback ───────────────────────────────
+        logger.debug("  🔄  Falling back to scraper for %s", url[:60])
         bs4_text = scrape_url(url)
         if len(bs4_text) > len(full_text):
             full_text = bs4_text
@@ -164,4 +179,8 @@ def extract_all(raw_articles: list[dict]) -> list[dict]:
         time.sleep(0.3)  # polite delay
 
     logger.info("📦 Extraction complete: %d articles processed.", len(enriched_articles))
+
+    # Release the shared Playwright browser now that all articles are done
+    close_browser()
+
     return enriched_articles

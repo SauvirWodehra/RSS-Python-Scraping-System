@@ -41,7 +41,7 @@ def run_pipeline() -> dict:
         Summary dict with keys: found, inserted, skipped, errors, status
     """
     from db.connection import (
-        init_pool, seed_sources,
+        init_pool, seed_sources, get_all_sources,
         bulk_insert_articles,
         create_pipeline_run, finish_pipeline_run,
     )
@@ -60,11 +60,12 @@ def run_pipeline() -> dict:
     found    = 0
 
     try:
-        # ── Stage 0: Seed sources (idempotent) ───────────────────────────────
-        url_to_id = seed_sources()
+        # ── Stage 0: Seed sources from config (idempotent), then load from DB ───
+        seed_sources()              # upsert config → rss_sources table
+        sources = get_all_sources() # read active sources from DB (runtime truth)
 
-        # ── Stage 1: Collect RSS feeds ────────────────────────────────────────
-        raw_articles = collect_all_feeds(url_to_id)
+        # ── Stage 1: Collect RSS feeds in parallel ───────────────────────────
+        raw_articles = collect_all_feeds(sources)
         found = len(raw_articles)
 
         if not raw_articles:

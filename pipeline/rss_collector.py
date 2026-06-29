@@ -3,8 +3,12 @@ pipeline/rss_collector.py
 --------------------------
 Stage 1 – RSS Collector
 
-Reads every configured RSS feed using feedparser, extracts raw entry
-metadata, and returns a list of dicts ready for the next pipeline stage.
+Reads every active RSS source from the database using feedparser, extracts
+raw entry metadata, and returns a list of dicts ready for the next pipeline
+stage.
+
+Feeds are fetched in PARALLEL using a ThreadPoolExecutor (network I/O is
+the bottleneck; threads give near-linear speedup up to the worker cap).
 
 Each returned dict has:
     url        : str  – article link
@@ -15,19 +19,31 @@ Each returned dict has:
     source_id  : int  – FK to rss_sources table
     source_name: str
     category   : str
+
+Public API:
+    collect_feed(source: dict) -> list[dict]
+    collect_all_feeds(sources: list[dict]) -> list[dict]
 """
 
 import logging
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import feedparser
 
-from config.settings import RSS_FEEDS, REQUEST_TIMEOUT
+from config.settings import REQUEST_TIMEOUT
 from db.connection import update_source_last_fetched
 
 logger = logging.getLogger(__name__)
+
+# Maximum parallel feed-fetch workers.
+# RSS fetching is pure network I/O — 8 workers is polite yet fast.
+_MAX_WORKERS = 8
+
+# Thread-safe lock for aggregating results (list.extend is not atomic)
+_results_lock = threading.Lock()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -39,7 +55,6 @@ def _parse_date(entry: feedparser.util.FeedParserDict) -> datetime | None:
     Try multiple feedparser date fields and return a UTC-aware datetime.
     Falls back to None if nothing can be parsed.
     """
-    # feedparser normalises dates into a struct_time in published_parsed / updated_parsed
     for attr in ("published_parsed", "updated_parsed", "created_parsed"):
         t = getattr(entry, attr, None)
         if t:
@@ -63,31 +78,34 @@ def _clean_text(text: str | None) -> str:
     if not text:
         return ""
     import re
-    # Remove HTML tags
     clean = re.sub(r"<[^>]+>", " ", text)
-    # Collapse whitespace
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Core collector
+# Core collector — runs inside a worker thread
 # ──────────────────────────────────────────────────────────────────────────────
 
-def collect_feed(feed_cfg: dict, source_id: int) -> list[dict]:
+def collect_feed(source: dict) -> list[dict]:
     """
     Parse a single RSS feed and return a list of raw article dicts.
 
+    Thread-safe: feedparser.parse() is stateless; update_source_last_fetched()
+    uses psycopg2.ThreadedConnectionPool which is thread-safe.
+
     Args:
-        feed_cfg  : dict with keys {name, url, category}
-        source_id : int – row id from rss_sources
+        source: dict with keys {id, name, url, category}  (from get_all_sources())
 
     Returns:
         List of raw article dicts (may be empty on error).
     """
-    url  = feed_cfg["url"]
-    name = feed_cfg["name"]
-    logger.info("  📡 Fetching feed: %s (%s)", name, url)
+    source_id = source["id"]
+    url       = source["url"]
+    name      = source["name"]
+    category  = source["category"]
+
+    logger.info("  📡 Fetching feed: %s", name)
 
     try:
         parsed = feedparser.parse(url, request_headers={
@@ -110,12 +128,11 @@ def collect_feed(feed_cfg: dict, source_id: int) -> list[dict]:
 
     articles = []
     for entry in entries:
-        link = entry.get("link", "").strip()
+        link  = entry.get("link", "").strip()
         title = _clean_text(entry.get("title", ""))
         if not link or not title:
-            continue  # skip entries without a URL or title
+            continue
 
-        # Prefer content field over summary for richer text
         summary_raw = (
             entry.get("content", [{}])[0].get("value", "")
             or entry.get("summary", "")
@@ -125,44 +142,73 @@ def collect_feed(feed_cfg: dict, source_id: int) -> list[dict]:
         articles.append({
             "url":         link,
             "title":       title,
-            "summary":     _clean_text(summary_raw)[:2000],  # cap RSS summary
+            "summary":     _clean_text(summary_raw)[:2000],
             "published":   _parse_date(entry),
             "author":      _clean_text(entry.get("author", "")),
             "source_id":   source_id,
             "source_name": name,
-            "category":    feed_cfg["category"],
+            "category":    category,
         })
 
-    logger.info("  ✅ %s: %d entries collected.", name, len(articles))
+    logger.info("  ✅ %-20s %3d entries", name, len(articles))
     update_source_last_fetched(source_id)
     return articles
 
 
-def collect_all_feeds(url_to_id: dict[str, int]) -> list[dict]:
+# ──────────────────────────────────────────────────────────────────────────────
+# Parallel orchestrator
+# ──────────────────────────────────────────────────────────────────────────────
+
+def collect_all_feeds(sources: list[dict]) -> list[dict]:
     """
-    Iterate all configured RSS feeds and aggregate raw articles.
+    Fetch all RSS feeds in PARALLEL and aggregate raw articles.
+
+    Sources come from the database (get_all_sources()), not the config file.
+    A ThreadPoolExecutor is used because RSS fetching is pure network I/O —
+    multiple feeds can be downloaded simultaneously with no GIL contention.
 
     Args:
-        url_to_id: mapping of feed URL → source_id (from seed_sources())
+        sources: list of dicts {id, name, url, category} — from get_all_sources()
 
     Returns:
         Combined list of raw article dicts across all feeds.
     """
+    n_workers = min(_MAX_WORKERS, len(sources))
+
     logger.info("=" * 60)
-    logger.info("🚀 RSS Collector starting — %d feeds configured", len(RSS_FEEDS))
+    logger.info(
+        "🚀 RSS Collector — %d active sources from DB | %d parallel workers",
+        len(sources), n_workers,
+    )
     logger.info("=" * 60)
 
     all_articles: list[dict] = []
+    errors: int = 0
 
-    for feed_cfg in RSS_FEEDS:
-        source_id = url_to_id.get(feed_cfg["url"])
-        if source_id is None:
-            logger.warning("No source_id for feed %s — skipping.", feed_cfg["name"])
-            continue
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all feed-fetch tasks at once
+        future_to_source = {
+            executor.submit(collect_feed, source): source
+            for source in sources
+        }
 
-        articles = collect_feed(feed_cfg, source_id)
-        all_articles.extend(articles)
-        time.sleep(0.5)  # polite crawl delay between feeds
+        # Collect results as each future completes (order varies)
+        for future in as_completed(future_to_source):
+            source = future_to_source[future]
+            try:
+                articles = future.result()
+                with _results_lock:
+                    all_articles.extend(articles)
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "  ❌  Feed collection failed for %s: %s",
+                    source["name"], exc,
+                )
 
-    logger.info("📦 Total raw articles collected: %d", len(all_articles))
+    logger.info("─" * 60)
+    logger.info(
+        "📦 Collection complete — %d articles from %d feeds (%d errors)",
+        len(all_articles), len(sources), errors,
+    )
     return all_articles

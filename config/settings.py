@@ -60,6 +60,18 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE  = LOGS_DIR / "pipeline.log"
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Vector Embedding Deduplication
+# ──────────────────────────────────────────────────────────────────────────────
+# Cosine similarity threshold for semantic deduplication (0.0 – 1.0).
+# Articles with similarity ≥ this value are treated as duplicates and skipped.
+# Higher = stricter (fewer false positives). Recommended range: 0.90 – 0.95.
+VECTOR_SIM_THRESHOLD = float(os.getenv("VECTOR_SIM_THRESHOLD", "0.92"))
+
+# Sentence-transformers model to use for generating embeddings.
+# all-MiniLM-L6-v2 → 384 dims, fast, good quality, ~80 MB download.
+VECTOR_MODEL_NAME = os.getenv("VECTOR_MODEL_NAME", "all-MiniLM-L6-v2")
+
+# ──────────────────────────────────────────────────────────────────────────────
 # RSS Feed Sources
 # Format: {"name": str, "url": str, "category": str}
 # ──────────────────────────────────────────────────────────────────────────────

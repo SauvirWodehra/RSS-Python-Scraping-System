@@ -1,15 +1,15 @@
-# 📡 RSS Python Scraping System
+# 📡 AI-Powered RSS Python Scraping System
 
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16%2B-336791?logo=postgresql&logoColor=white)
-![Pandas](https://img.shields.io/badge/Pandas-3.x-150458?logo=pandas&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Status](https://img.shields.io/badge/Status-Active-brightgreen)
+![pgvector](https://img.shields.io/badge/pgvector-Supported-purple?logo=postgresql&logoColor=white)
+![Playwright](https://img.shields.io/badge/Playwright-Headless-00B200?logo=playwright&logoColor=white)
+![SentenceTransformers](https://img.shields.io/badge/SentenceTransformers-All--MiniLM--L6--v2-orange)
 
-**A fully automated, production-grade RSS feed scraping pipeline.**  
-Collects articles from 13 news sources, extracts full content, cleans the data, and stores everything in PostgreSQL — running automatically every hour.
+**A fully automated, production-grade RSS feed scraping pipeline with AI semantic deduplication.**  
+Collects articles from news sources, extracts full content (bypassing bot protections), calculates AI embeddings, tracks semantic duplicates, and stores everything in PostgreSQL — running silently in the background every hour via Windows Task Scheduler.
 
 </div>
 
@@ -17,135 +17,53 @@ Collects articles from 13 news sources, extracts full content, cleans the data, 
 
 ## What It Does
 
-> Every hour, this pipeline automatically visits 13 news websites, reads their latest articles, extracts the full content, cleans the data, and saves everything neatly into a PostgreSQL database — ready for analysis.
+> Every hour, this pipeline automatically visits configured news websites, reads their latest articles, uses advanced extractors to pull the full content, computes an AI mathematical embedding of the text, and checks your database to see if the same story has already been covered by a different source. It then saves everything neatly into a PostgreSQL database — ready for analysis.
 
-No manual effort needed. The system handles collection, extraction, deduplication, cleaning, storage, and analytics completely automatically.
+No manual effort needed. The system handles collection, extraction, AI deduplication, cleaning, storage, and background automation.
+
+---
+
+## 🚀 Key Features
+
+- **AI Semantic Deduplication**: Uses `all-MiniLM-L6-v2` and PostgreSQL `pgvector` to mathematically compare article content. It successfully detects if two different sites (e.g., Ars Technica and TechCrunch) cover the exact same story and marks them with `is_duplicate=True`, tracking the `duplicate_of_id` and `similarity_score`!
+- **Advanced Full-Text Extraction**: Uses `Trafilatura` and `Newspaper4k` for best-in-class article body extraction.
+- **Headless Browser Fallback**: Built-in Playwright (Chromium) singleton fallback to scrape dynamic, JavaScript-rendered, or bot-protected sites (e.g., Bloomberg, The Verge).
+- **Invisible Automation**: Fully integrated with Windows Task Scheduler (`schtasks`) to run seamlessly in the background without keeping a terminal open.
+- **Idempotent DB Storage**: Bulk upserts with `ON CONFLICT (url) DO NOTHING` alongside semantic deduplication guarantees no messy duplicate data.
 
 ---
 
 ## Architecture
 
 ```
-RSS Sources → RSS Collector → Article Extractor → Web Scraper → Data Cleaner → PostgreSQL DB → Analytics
-```
-
-```
-┌─────────────┐    ┌──────────────┐    ┌───────────────────┐    ┌──────────────┐    ┌─────────────┐
-│  13 RSS     │───▶│ RSS          │───▶│ Article Extractor │───▶│ Data Cleaner │───▶│ PostgreSQL  │
-│  Feed URLs  │    │ Collector    │    │ Newspaper4k +     │    │ Pandas       │    │ rss_pipeline│
-│             │    │ feedparser   │    │ BeautifulSoup     │    │              │    │             │
-└─────────────┘    └──────────────┘    └───────────────────┘    └──────────────┘    └─────────────┘
-                                                                                           │
-                                                                                    ┌──────▼──────┐
-                                                                                    │  Analytics  │
-                                                                                    │  Reporter   │
-                                                                                    │  + CSV      │
-                                                                                    └─────────────┘
+RSS Sources → Collector → Extractor (Trafilatura/Newspaper4k/Playwright) → AI Embedder → PostgreSQL (pgvector)
 ```
 
 ---
 
 ## Tech Stack
 
-| Component | Library | Purpose |
-|-----------|---------|---------|
-| RSS Parsing | `feedparser` | Reads XML feeds from all 13 sources |
-| Article Extraction | `newspaper4k` | Extracts full article text, author, date |
-| HTML Fallback Scraping | `requests` + `beautifulsoup4` | Scrapes when Newspaper4k fails |
-| Data Cleaning | `pandas` | Deduplication, normalisation, word count, language detection |
-| Language Detection | `langdetect` | Identifies article language (ISO 639-1) |
-| Database | `psycopg2` + PostgreSQL | Bulk upsert with duplicate prevention |
-| Scheduling | `APScheduler` | Runs pipeline every 60 minutes automatically |
-| Logging | Python `logging` | Rotating file + stdout logging |
-| Config | `python-dotenv` | Environment-based credentials management |
+| Component | Library/Tool | Purpose |
+|-----------|--------------|---------|
+| **RSS Parsing** | `feedparser` | Reads XML feeds from sources |
+| **Article Extraction** | `trafilatura` + `newspaper4k` | Extracts full article body, author, publish date |
+| **JS/Bot Bypass** | `playwright` (Chromium) | Headless browser for complex/protected sites |
+| **AI Embeddings** | `sentence-transformers` | Generates 384-dimensional vector embeddings of text |
+| **Database** | `psycopg2` + PostgreSQL | Stores articles and metadata |
+| **Vector DB** | `pgvector` | Performs high-speed cosine similarity searches |
+| **Automation** | Windows `schtasks` | Runs pipeline invisibly in the background |
 
 ---
 
-## RSS Feed Sources (13 Feeds)
+## Database Schema Highlights
 
-| Category | Sources |
-|----------|---------|
-| 🖥️ Technology | TechCrunch, The Verge, Wired, Ars Technica |
-| 💰 Finance | Reuters Business, Yahoo Finance, MarketWatch |
-| 📰 General News | BBC News, Reuters Top News, NPR News |
-| 🔭 Science | NASA Breaking News, ScienceDaily, New Scientist |
-
----
-
-## Project Structure
-
-```
-RSS_Scraping/
-│
-├── main.py                        # Entry point — run this
-├── requirements.txt               # Python dependencies
-├── .env.example                   # Environment variable template
-├── COMMANDS.txt                   # Full command reference cheatsheet
-│
-├── config/
-│   └── settings.py                # DB config, feed URLs, scheduler interval
-│
-├── db/
-│   ├── schema.sql                 # PostgreSQL DDL (3 tables + indexes)
-│   └── connection.py              # ThreadedConnectionPool + bulk upsert helpers
-│
-├── pipeline/
-│   ├── rss_collector.py           # Stage 1: feedparser RSS reader
-│   ├── article_extractor.py       # Stage 2: Newspaper4k full-text extractor
-│   ├── web_scraper.py             # Stage 2b: BeautifulSoup HTML fallback
-│   └── data_cleaner.py            # Stage 3: Pandas cleaning + CSV export
-│
-├── scheduler/
-│   └── scheduler.py               # APScheduler — fires pipeline every 60 min
-│
-├── analytics/
-│   └── reporter.py                # 6-section analytics report + CSV export
-│
-└── utils/
-    └── logger.py                  # Rotating log (10 MB, 5 backups) + stdout
-```
-
----
-
-## Database Schema
-
-### `rss_sources` — Feed registry
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | SERIAL PK | |
-| `name` | TEXT | Feed name (e.g. "TechCrunch") |
-| `url` | CITEXT UNIQUE | RSS feed URL |
-| `category` | TEXT | Technology / Finance / Science / General |
-| `is_active` | BOOLEAN | Enable / disable feed |
-| `last_fetched_at` | TIMESTAMPTZ | Updated after each run |
-
-### `articles` — All scraped articles
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | SERIAL PK | |
-| `source_id` | INT FK | → rss_sources |
-| `title` | TEXT | Article headline |
-| `url` | CITEXT UNIQUE | Article URL (prevents duplicates) |
-| `author` | TEXT | Author name(s) |
-| `published_at` | TIMESTAMPTZ | Original publish time |
-| `summary` | TEXT | RSS-provided summary |
-| `full_text` | TEXT | Full scraped article body |
-| `word_count` | INT | Words in full_text |
-| `language` | TEXT | ISO 639-1 code (`en`, `fr`, etc.) |
-| `is_clean` | BOOLEAN | Passed all cleaning checks |
-| `scraped_at` | TIMESTAMPTZ | When row was inserted |
-
-### `pipeline_runs` — Execution audit log
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | SERIAL PK | |
-| `started_at` | TIMESTAMPTZ | Run start time |
-| `finished_at` | TIMESTAMPTZ | Run end time |
-| `articles_found` | INT | Total RSS entries fetched |
-| `articles_inserted` | INT | New articles stored |
-| `articles_skipped` | INT | Duplicates skipped |
-| `errors` | INT | Error count |
-| `status` | TEXT | `success` / `partial` / `failed` |
+### `articles` Table
+- `url` (CITEXT UNIQUE) - Prevents exact URL duplicates
+- `full_text` (TEXT) - The full scraped article body
+- `content_embedding` (VECTOR(384)) - The mathematical representation of the article
+- `is_duplicate` (BOOLEAN) - Flagged if AI determines the story is already covered
+- `duplicate_of_id` (INT) - Links to the original article ID
+- `similarity_score` (FLOAT) - The cosine similarity score (e.g., 0.96)
 
 ---
 
@@ -153,7 +71,7 @@ RSS_Scraping/
 
 ### Prerequisites
 - Python 3.12 or higher
-- PostgreSQL 15 or higher
+- PostgreSQL 15+ with the `pgvector` extension installed.
 
 ### 1. Clone the repository
 ```bash
@@ -163,139 +81,58 @@ cd RSS-Python-Scraping-System
 
 ### 2. Install dependencies
 ```bash
-python -m pip install --prefer-binary -r requirements.txt
-python -m pip install --prefer-binary newspaper4k lxml_html_clean
+python -m pip install -r requirements.txt
+playwright install chromium
 ```
 
 ### 3. Configure environment
-```bash
-# Copy the example and fill in your PostgreSQL credentials
-cp .env.example .env
-```
-
-Edit `.env`:
+Create a `.env` file:
 ```env
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=rss_pipeline
 DB_USER=postgres
 DB_PASSWORD=your_postgres_password_here
-SCHEDULER_INTERVAL_MINUTES=60
-LOG_LEVEL=INFO
+VECTOR_SIM_THRESHOLD=0.92
 ```
 
-### 4. Create the PostgreSQL database
-```sql
-CREATE DATABASE rss_pipeline;
-```
-
-Or from terminal:
+### 4. Setup the Database
+Initialise the pgvector extension and schemas:
 ```bash
-# Linux / Mac
-psql -U postgres -c "CREATE DATABASE rss_pipeline;"
-
-# Windows PowerShell
-$env:PGPASSWORD='your_password'
-& "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -c "CREATE DATABASE rss_pipeline;"
+python -c "from db.connection import init_pool, init_schema; init_pool(); init_schema()"
 ```
 
 ---
 
-## Usage
+## Usage & Automation
 
-### Run once (test / one-off scrape)
+### Test a Single Article & AI Deduplication
+Want to see the AI deduplication in action? Run this script to test inserting a single article:
 ```bash
-python main.py --once
+python try_add_article.py --url "https://arstechnica.com/..." --source "Ars Technica"
 ```
 
-### Run continuously (auto-repeats every 60 min)
+### Run the Background Automaton (Windows)
+Set up the pipeline to run silently in the background every 60 minutes:
 ```bash
-python main.py
-```
-Press `Ctrl+C` to stop.
+# Register the automated task
+python setup_cron.py
 
-### View analytics report
-```bash
-python main.py --report
-```
+# Check the status of the automated task
+python setup_cron.py --status
 
----
+# Trigger an immediate background run
+python setup_cron.py --run-now
 
-## Pipeline Stages
-
-### Stage 1 — RSS Collector (`pipeline/rss_collector.py`)
-- Iterates all 13 configured feed URLs
-- Parses XML with `feedparser`
-- Extracts: title, URL, summary, publish date, author per entry
-- Adds 0.5s polite delay between feeds
-- **Output:** ~300–400 raw article dicts per run
-
-### Stage 2 — Article Extractor (`pipeline/article_extractor.py`)
-- Visits each article URL to fetch full content
-- **Primary:** Newspaper4k — extracts article body, author, date automatically
-- **Fallback:** BeautifulSoup — scrapes `<p>` tags when Newspaper4k fails or is blocked
-- **Output:** Enriched dicts with `full_text`, merged `author`, `published_at`
-
-### Stage 3 — Data Cleaner (`pipeline/data_cleaner.py`)
-Pandas-based cleaning pipeline:
-1. Strip whitespace & decode HTML entities
-2. Deduplicate by URL (keeps first occurrence)
-3. Drop rows with no usable text content
-4. Drop rows with title < 5 characters
-5. Normalise dates to UTC
-6. Compute `word_count`
-7. Detect language (`langdetect`)
-8. Export timestamped CSV to `exports/`
-- **Output:** Clean list of dicts ready for DB insertion
-
-### Stage 4 — Database Storage (`db/connection.py`)
-- `ON CONFLICT (url) DO NOTHING` — fully idempotent, safe to re-run anytime
-- ThreadedConnectionPool for thread-safe concurrent access
-- Records run metadata in `pipeline_runs` table
-
----
-
-## Analytics Report
-
-Run `python main.py --report` to get:
-
-| Section | What it shows |
-|---------|--------------|
-| Overall Stats | Total articles, active sources, avg word count, date range |
-| Articles per Source | Count + avg words per feed |
-| Articles per Day | Publication trend over last 30 days |
-| Top Authors | Most prolific authors across all sources |
-| Language Breakdown | % of articles per language |
-| Pipeline Run History | Last 10 execution results |
-
----
-
-## Adding a New RSS Feed
-
-Edit `config/settings.py` — add an entry to `RSS_FEEDS`:
-
-```python
-{
-    "name": "Hacker News",
-    "url":  "https://hnrss.org/frontpage",
-    "category": "Technology",
-},
+# Remove the automated task
+python setup_cron.py --remove
 ```
 
-Re-run the pipeline — it auto-seeds the new source and starts collecting immediately.
-
----
-
-## Key Design Decisions
-
-| Decision | Reason |
-|----------|--------|
-| `ON CONFLICT DO NOTHING` on URL | Idempotent — safe to re-run any number of times |
-| Newspaper4k → BS4 fallback | Never loses an article even when primary extractor is blocked |
-| `ThreadedConnectionPool` | APScheduler runs jobs on threads — pool provides safe concurrent DB access |
-| `pipeline_runs` audit table | Full history of every run with inserted/skipped/error counts |
-| Rotating log (10 MB, 5 backups) | Logs never consume unbounded disk space |
-| `.env` for credentials | Passwords never committed to version control |
+### Debugging Tools
+- `check_db_dups.py`: See recent articles and all AI-flagged duplicates in the DB.
+- `fetch_fresh_urls.py`: Grabs the latest URLs from feeds for testing.
+- `test_dedup_e2e.py`: Runs a purely simulated end-to-end semantic deduplication test.
+- `find_fresh_pairs.py`: Identifies un-scraped articles across sources to test deduplication.
 
 ---
 

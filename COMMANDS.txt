@@ -3,6 +3,14 @@
   Project Location: C:\Users\LOQ\Desktop\Study\RSS_Scraping
 ================================================================================
 
+  WHAT'S NEW (Parallel Mode):
+  ─────────────────────────────────────────────────────────────────────────────
+  ✅ RSS feeds fetched in PARALLEL (8 workers) — ~2s instead of ~8s
+  ✅ Sources loaded from PostgreSQL DB (not hardcoded config)
+  ✅ Playwright headless browser for JS-blocked sites (newscientist.com etc.)
+  ✅ Persistent Playwright browser (launched once, reused per pipeline run)
+  ─────────────────────────────────────────────────────────────────────────────
+
 
 --------------------------------------------------------------------------------
   STEP 0 — NAVIGATE TO PROJECT (Run this first every time)
@@ -15,9 +23,12 @@
   STEP 1 — FIRST TIME SETUP (Run only once)
 --------------------------------------------------------------------------------
 
-  # Install all Python dependencies
+  # Install all Python dependencies (including Playwright)
   python -m pip install --prefer-binary -r requirements.txt
   python -m pip install --prefer-binary newspaper4k lxml_html_clean
+
+  # Install Playwright's Chromium browser binary
+  python -m playwright install chromium
 
   # Create the PostgreSQL database
   $env:PGPASSWORD='Sauvir@1130'
@@ -25,31 +36,56 @@
 
 
 --------------------------------------------------------------------------------
-  STEP 2 — RUNNING THE PIPELINE
+  STEP 2 — RUNNING THE PIPELINE (PARALLEL MODE)
 --------------------------------------------------------------------------------
 
-  # MODE 1: Run once and exit (recommended for testing)
+  # MODE 1: Run once and exit — parallel RSS + Playwright scraping
   python main.py --once
 
-  # MODE 2: Continuous mode — auto-repeats every 60 minutes (Press Ctrl+C to stop)
+  # MODE 2: Continuous mode — runs immediately, then every 60 minutes
+  #         (Press Ctrl+C to stop)
   python main.py
 
   # MODE 3: Show analytics report only (no scraping)
   python main.py --report
 
+  ─── What happens under the hood: ───────────────────────────────────────────
+  Stage 0  →  Seed sources (config → DB), load active sources from DB
+  Stage 1  →  Fetch all 13 RSS feeds IN PARALLEL (8 threads, ~2 seconds)
+  Stage 2  →  Extract full article text:
+              • newspaper4k  (fast, most sites)
+              • Playwright   (JS-heavy / bot-blocked sites like newscientist.com)
+  Stage 3  →  Clean & validate with Pandas
+  Stage 4  →  Bulk insert into PostgreSQL
+  ─────────────────────────────────────────────────────────────────────────────
+
 
 --------------------------------------------------------------------------------
-  STEP 3 — ANALYTICS & REPORT COMMANDS
+  STEP 3 — MONITOR THE PIPELINE IN REAL TIME
 --------------------------------------------------------------------------------
 
-  # Generate full analytics report (prints stats + saves CSV to exports/)
-  python main.py --report
+  # Watch live logs (like tail -f on Linux)
+  Get-Content .\logs\pipeline.log -Wait -Tail 30
 
   # View last 50 lines of log
   Get-Content .\logs\pipeline.log -Tail 50
 
-  # Watch log live in real-time (like Linux tail -f)
-  Get-Content .\logs\pipeline.log -Wait -Tail 20
+  # Check for errors only
+  Select-String -Path .\logs\pipeline.log -Pattern "ERROR|failed|WARNING" | Select-Object -Last 20
+
+  # Confirm parallel workers are active (look for simultaneous Fetching lines)
+  Select-String -Path .\logs\pipeline.log -Pattern "Fetching feed|entries" | Select-Object -Last 20
+
+  # Check Playwright activity
+  Select-String -Path .\logs\pipeline.log -Pattern "Playwright" | Select-Object -Last 20
+
+
+--------------------------------------------------------------------------------
+  STEP 4 — ANALYTICS & EXPORTS
+--------------------------------------------------------------------------------
+
+  # Generate full analytics report (prints stats + saves CSV to exports/)
+  python main.py --report
 
   # List all exported CSV files (newest first)
   Get-ChildItem .\exports\ | Sort-Object LastWriteTime -Descending
@@ -62,7 +98,7 @@
 
 
 --------------------------------------------------------------------------------
-  STEP 4 — CONNECT TO POSTGRESQL DATABASE
+  STEP 5 — CONNECT TO POSTGRESQL DATABASE
 --------------------------------------------------------------------------------
 
   # Set password and connect
@@ -73,11 +109,20 @@
 
 
 --------------------------------------------------------------------------------
-  STEP 5 — SQL QUERIES (Run inside psql)
+  STEP 6 — SQL QUERIES (Run inside psql)
 --------------------------------------------------------------------------------
 
   -- Total articles stored
   SELECT COUNT(*) FROM articles;
+
+  -- All active RSS sources (managed in DB — toggle is_active to enable/disable)
+  SELECT id, name, category, is_active, last_fetched_at FROM rss_sources ORDER BY id;
+
+  -- DISABLE a source (stops it from being fetched without deleting it)
+  UPDATE rss_sources SET is_active = FALSE WHERE name = 'Reuters Business';
+
+  -- ENABLE a source
+  UPDATE rss_sources SET is_active = TRUE WHERE name = 'Reuters Business';
 
   -- Articles per source with average word count
   SELECT s.name, s.category, COUNT(a.id) AS articles, AVG(a.word_count)::INT AS avg_words
@@ -111,9 +156,6 @@
          articles_inserted, articles_skipped, errors, status
   FROM pipeline_runs ORDER BY started_at DESC;
 
-  -- All RSS sources and when they were last fetched
-  SELECT name, category, is_active, last_fetched_at FROM rss_sources;
-
   -- Search for articles by keyword in title
   SELECT title, url, published_at FROM articles WHERE title ILIKE '%AI%' LIMIT 10;
 
@@ -129,14 +171,11 @@
 
 
 --------------------------------------------------------------------------------
-  STEP 6 — QUICK HEALTH CHECKS (PowerShell)
+  STEP 7 — QUICK HEALTH CHECKS (PowerShell)
 --------------------------------------------------------------------------------
 
   # Check if any pipeline process is already running
   Get-Process python* -ErrorAction SilentlyContinue
-
-  # Check logs for errors from last run
-  Select-String -Path .\logs\pipeline.log -Pattern "ERROR|failed" | Select-Object -Last 20
 
   # Quick article count from Python
   python -c "
@@ -147,30 +186,45 @@
   print('Total articles in DB:', rows[0]['total'])
   "
 
+  # Test Playwright is working (should print chars extracted > 0)
+  python -c "
+  import sys; sys.path.insert(0, '.')
+  from pipeline.web_scraper import scrape_url, close_browser
+  text = scrape_url('https://www.newscientist.com/article/2528945-keto-diet-shows-real-promise-for-anorexia-recovery/')
+  print('Playwright chars extracted:', len(text))
+  close_browser()
+  "
+
+  # Verify parallel workers in last pipeline run (should show 8 feeds at same second)
+  Select-String -Path .\logs\pipeline.log -Pattern "Fetching feed" | Select-Object -Last 15
+
 
 --------------------------------------------------------------------------------
-  STEP 7 — ADD A NEW RSS FEED
+  STEP 8 — ADD A NEW RSS FEED
 --------------------------------------------------------------------------------
 
+  OPTION A — Via config (re-seeds on next run):
+  ───────────────────────────────────────────────
   1. Open:  C:\Users\LOQ\Desktop\Study\RSS_Scraping\config\settings.py
-
   2. Add a new entry inside the RSS_FEEDS list:
-
         {
             "name": "Hacker News",
             "url":  "https://hnrss.org/frontpage",
             "category": "Technology",
         },
+  3. Run: python main.py --once
+     The source is seeded into DB automatically and fetched in parallel.
 
-  3. Save the file and run the pipeline:
-        python main.py --once
+  OPTION B — Directly in the database (instant, no restart needed):
+  ──────────────────────────────────────────────────────────────────
+  INSERT INTO rss_sources (name, url, category)
+  VALUES ('Hacker News', 'https://hnrss.org/frontpage', 'Technology');
 
-  The new source is automatically seeded into the database and
-  articles start being collected on the very next run.
+  Then run: python main.py --once
 
 
 --------------------------------------------------------------------------------
-  STEP 8 — STOPPING THE PIPELINE
+  STEP 9 — STOPPING THE PIPELINE
 --------------------------------------------------------------------------------
 
   # If running in continuous mode, press:
@@ -189,16 +243,16 @@
   +-- main.py                     <-- Entry point. Always run this.
   |
   +-- config/
-  |   +-- settings.py             <-- DB credentials, feed URLs, scheduler config
+  |   +-- settings.py             <-- DB credentials, initial feed URLs (seeding only)
   |
   +-- db/
   |   +-- schema.sql              <-- Table definitions (auto-applied on startup)
-  |   +-- connection.py           <-- DB pool, bulk insert, run tracking
+  |   +-- connection.py           <-- DB pool, get_all_sources(), bulk insert, run tracking
   |
   +-- pipeline/
-  |   +-- rss_collector.py        <-- Stage 1: Reads RSS XML feeds (feedparser)
-  |   +-- article_extractor.py    <-- Stage 2: Extracts full text (newspaper4k)
-  |   +-- web_scraper.py          <-- Stage 2 fallback: HTML scraping (BS4)
+  |   +-- rss_collector.py        <-- Stage 1: PARALLEL RSS fetching (ThreadPoolExecutor)
+  |   +-- article_extractor.py    <-- Stage 2: Extracts full text (newspaper4k + Playwright)
+  |   +-- web_scraper.py          <-- Stage 2 fallback: BS4 scraper + Playwright browser
   |   +-- data_cleaner.py         <-- Stage 3: Cleans data (Pandas)
   |
   +-- scheduler/

@@ -1,15 +1,15 @@
 -- db/schema.sql
--- Full DDL for the RSS Scraping Pipeline database.
--- Run automatically on startup via db/connection.py → init_schema().
+-- Base DDL for the RSS Scraping Pipeline database.
+-- Always executed on startup via db/connection.py → init_schema().
+-- Does NOT include pgvector — that lives in schema_vector.sql.
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Extension: enable case-insensitive text (optional but useful)
+-- Extension: enable case-insensitive text
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS citext;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Table: rss_sources
--- Stores the list of configured RSS feed sources.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS rss_sources (
     id          SERIAL PRIMARY KEY,
@@ -25,7 +25,6 @@ CREATE INDEX IF NOT EXISTS idx_rss_sources_category ON rss_sources(category);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Table: articles
--- Stores every scraped and cleaned article.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS articles (
     id           SERIAL PRIMARY KEY,
@@ -39,17 +38,23 @@ CREATE TABLE IF NOT EXISTS articles (
     word_count   INT,
     language     TEXT        DEFAULT 'en',
     is_clean     BOOLEAN     NOT NULL DEFAULT FALSE,
-    scraped_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    scraped_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Duplicate tracking (content-only semantic deduplication)
+    is_duplicate     BOOLEAN     NOT NULL DEFAULT FALSE,
+    duplicate_of_id  INT         REFERENCES articles(id) ON DELETE SET NULL,
+    similarity_score FLOAT
+    -- NOTE: embedding VECTOR(384) column added by schema_vector.sql when pgvector is available
 );
 
-CREATE INDEX IF NOT EXISTS idx_articles_source_id   ON articles(source_id);
+CREATE INDEX IF NOT EXISTS idx_articles_source_id    ON articles(source_id);
 CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_language     ON articles(language);
-CREATE INDEX IF NOT EXISTS idx_articles_is_clean     ON articles(is_clean);
+CREATE INDEX IF NOT EXISTS idx_articles_is_clean        ON articles(is_clean);
+CREATE INDEX IF NOT EXISTS idx_articles_is_duplicate    ON articles(is_duplicate);
+CREATE INDEX IF NOT EXISTS idx_articles_duplicate_of_id ON articles(duplicate_of_id);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Table: pipeline_runs
--- Audit log for every scheduler execution.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id                SERIAL PRIMARY KEY,
